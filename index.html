@@ -42,11 +42,11 @@ var CONFIG = {
       { name: "SW: KANAL 9", label: "Kanal 9" }
     ]},
     { title: "Sport", color: "#2e9e57", channels: [
-      { name: "ARENA SPORT 1 PREMIUM", label: "Arena Sport 1" },
-      { name: "ARENA SPORT 2 PREMIUM", label: "Arena Sport 2" },
-      { name: "ARENA SPORT 3 PREMIUM", label: "Arena Sport 3" },
-      { name: "ARENA SPORT 4 PREMIUM", label: "Arena Sport 4" },
-      { name: "ARENA SPORT PREMIUM 5", label: "Arena Sport 5" }
+      { name: "ARENA SPORT 1 PREMIUM", label: "Arena 1" },
+      { name: "ARENA SPORT 2 PREMIUM", label: "Arena 2" },
+      { name: "ARENA SPORT 3 PREMIUM", label: "Arena 3" },
+      { name: "ARENA SPORT 4 PREMIUM", label: "Arena 4" },
+      { name: "ARENA SPORT PREMIUM 5", label: "Arena 5" }
     ]}
   ]
 };
@@ -88,7 +88,7 @@ var CONFIG = {
   #menu .title { position:absolute; left:0; top:0; font-size:44px; font-weight:bold; }
   #menu .clock { position:absolute; right:0; top:0; font-size:44px; color:#aaa; }
   #grid { position:absolute; left:50px; top:100px; width:1190px; }
-  .tile { float:left; width:222px; height:104px; margin:0 12px 12px 0; background:#2a2e38; border-radius:12px;
+  .tile { float:left; width:222px; height:100px; margin:0 12px 10px 0; background:#2a2e38; border-radius:12px;
           position:relative; border:4px solid transparent; box-sizing:border-box; overflow:hidden; }
   .tile .bar { position:absolute; left:0; top:0; bottom:0; width:10px; }
   .tile .n { position:absolute; left:24px; top:10px; font-size:40px; font-weight:bold; color:#ffd34d; }
@@ -97,7 +97,7 @@ var CONFIG = {
   .tile.sel { background:#ffd34d; border-color:#fff; }
   .tile.sel .n, .tile.sel .c { color:#111; }
   .tile.missing { opacity:.35; }
-  #menu .foot { position:absolute; left:50px; right:50px; bottom:24px; font-size:24px; color:#999; text-align:center; }
+  #menu .foot { position:absolute; left:50px; right:50px; bottom:14px; font-size:24px; color:#999; text-align:center; }
 
   /* Felsökning */
   #debug { background:#000; font-family: monospace; font-size:17px; color:#9f9; padding:20px 30px; box-sizing:border-box; }
@@ -237,18 +237,41 @@ var CONFIG = {
       if (err) return cb("get_all_channels: " + err);
       var all = (js && js.data) || [];
       log("Leverantören har " + all.length + " kanaler");
+      // "name" kan vara en text eller en lista med alternativ, t.ex. ["RTRS", "RTRS HD", "BA: RTRS"]
+      function names(ch) { return (typeof ch.name === "string") ? [ch.name] : ch.name; }
+      // tar bort landsprefix (SW:, BA:, RS: …) och kvalitetsord (HD, FHD, SD, 4K) vid jämförelse
+      function core(s) {
+        return norm(String(s || "").replace(/^\s*[A-Z]{2,3}\s*[:|\-]\s*/i, "")
+                                   .replace(/\b(FHD|UHD|HD|SD|4K|HEVC|H265)\b/gi, ""));
+      }
+      // namn som någon annan av hennes kanaler matchar exakt – får inte "lånas" av en delträff
+      var taken = {};
+      for (var t = 0; t < CH.length; t++) { var nl = names(CH[t]); for (var u = 0; u < nl.length; u++) taken[core(nl[u])] = t; }
+
       var missing = [];
       for (var i = 0; i < CH.length; i++) {
-        var want = norm(CH[i].name), exact = [], partial = [];
+        var wants = names(CH[i]), exact = [], loose = [], partial = [];
         for (var j = 0; j < all.length; j++) {
-          var have = norm(all[j].name);
-          if (have === want) exact.push(all[j]);
-          else if (have.indexOf(want) >= 0) partial.push(all[j]);
+          var have = all[j].name, hit = 0;
+          for (var w = 0; w < wants.length; w++) {
+            if (norm(have) === norm(wants[w])) hit = Math.max(hit, 3);
+            else if (core(have) === core(wants[w])) hit = Math.max(hit, 2);
+            else if (core(have).indexOf(core(wants[w])) >= 0 &&
+                     !(core(have) in taken && taken[core(have)] !== i)) hit = Math.max(hit, 1);
+          }
+          if (hit === 3) exact.push(all[j]); else if (hit === 2) loose.push(all[j]); else if (hit === 1) partial.push(all[j]);
         }
-        CH[i].matches = exact.concat(partial); // dubbletter blir reserv om den första inte fungerar
-        if (!CH[i].matches.length) missing.push(CH[i].name);
+        CH[i].matches = exact.concat(loose, partial); // fler träffar = reserver om den första inte fungerar
+        if (CH[i].matches.length) {
+          if (!exact.length) log(CH[i].label + " -> \"" + CH[i].matches[0].name + "\"");
+        } else {
+          missing.push(CH[i].label);
+          // föreslå leverantörens namn som liknar det sökta
+          var first = core(wants[0]).substr(0, 4), sug = [];
+          for (var s = 0; s < all.length && sug.length < 6; s++) if (core(all[s].name).indexOf(first) >= 0) sug.push(all[s].name);
+          log("HITTADES INTE: " + CH[i].label + (sug.length ? "   liknande: " + sug.join(" | ") : ""));
+        }
       }
-      if (missing.length) log("HITTADES INTE: " + missing.join(", "));
       cb(null);
     });
   }
@@ -306,7 +329,7 @@ var CONFIG = {
   }
 
   /* ---------- Skärmar ---------- */
-  var mode = "splash", sel = 0, bannerTimer = null, toastTimer = null;
+  var ready = false, mode = "splash", sel = 0, bannerTimer = null, toastTimer = null;
   function show(id) {
     var ids = ["splash", "play", "menu", "debug"];
     for (var i = 0; i < ids.length; i++) $(ids[i]).className = "scr" + (ids[i] === id ? " on" : "");
@@ -376,7 +399,7 @@ var CONFIG = {
     var chUp = (k === 9 && !shift) || k === 33, chDown = (k === 9 && shift) || k === 34;
     var info = k === 89 && alt;
 
-    if (mode === "debug") { if (back || ok) showBanner(); return stop(e); }
+    if (mode === "debug") { if (back || ok) { if (ready) showBanner(); else { show("splash"); mode = "error"; } } return stop(e); }
 
     if (mode === "play") {
       if (ok || menuKey) openMenu();
@@ -412,12 +435,12 @@ var CONFIG = {
     log("Box: " + MODEL + "  MAC: " + MAC + (IS_STB ? "" : "  (DEMO-läge)"));
     var last = parseInt(store("lastChannel"), 10);
     var start = (last >= 0 && last < CH.length) ? last : 0;
-    if (!IS_STB) { setTimeout(function () { tune(start); }, 1200); return; }
+    if (!IS_STB) { setTimeout(function () { ready = true; tune(start); }, 1200); return; }
     login(function (err) {
       if (err) return fail(err);
       loadChannels(function (err2) {
         if (err2) return fail(err2);
-        tune(start);
+        ready = true; tune(start);
         // håll sessionen vid liv
         setInterval(function () { call({ type: "watchdog", action: "get_events", cur_play_type: 1, event_active_id: 0, init: 0 },
           function (e3) { if (e3) log("watchdog: " + e3); }); }, 120000);
