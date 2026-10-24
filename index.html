@@ -154,11 +154,15 @@ var CONFIG = {
   }
 
   /* ---------- Box-info ---------- */
-  var MAC = "00:1A:79:00:00:00", SN = "", MODEL = "MAG322";
+  var MAC = "00:1A:79:00:00:00", SN = "", MODEL = "MAG322", DEV1 = "", DEV2 = "", HW = "";
   if (IS_STB) {
     try { MAC = (gSTB.GetDeviceMacAddress() || MAC).toUpperCase(); } catch (e) {}
     try { SN = gSTB.GetDeviceSerialNumber() || ""; } catch (e) {}
     try { MODEL = gSTB.GetDeviceModelExt() || MODEL; } catch (e) {}
+    // samma identitetsuppgifter som leverantörens egen portal skickar
+    try { DEV1 = gSTB.GetUID ? (gSTB.GetUID() || "") : ""; } catch (e) {}
+    try { DEV2 = gSTB.GetUID ? (gSTB.GetUID("device_id", "device_id2") || "") : ""; } catch (e) {}
+    try { HW = gSTB.GetHardwareVersion ? (gSTB.GetHardwareVersion() || "") : ""; } catch (e) {}
   } else {
     document.body.className = "demo";
   }
@@ -253,10 +257,14 @@ var CONFIG = {
     function profile(cb2) {
       call({ type: "stb", action: "get_profile", hd: 1, ver: "ImageDescription: 0.2.18-r23-322; PORTAL version: 5.6.6",
              num_banks: 2, sn: SN, stb_type: "MAG322", client_type: "STB", image_version: 218, video_out: "hdmi",
-             auth_second_step: 1, not_valid_token: 0, api_signature: 262, prehash: 0 },
+             auth_second_step: 1, not_valid_token: 0, api_signature: 262, prehash: 0,
+             device_id: DEV1, device_id2: DEV2, signature: "", hw_version: HW, hw_version_2: "",
+             timestamp: Math.floor(new Date().getTime() / 1000),
+             metrics: JSON.stringify({ mac: MAC, sn: SN, model: "MAG322", type: "STB", uid: DEV1, random: "" }) },
         function (err, js) {
           if (err) return cb2("get_profile: " + err);
           var st = js && js.status !== undefined ? String(js.status) : "?";
+          if (st !== "0") { try { log("Profilsvar: " + JSON.stringify(js).substr(0, 260)); } catch (x) {} }
           if (st === "0") log("Profil OK – leverantören känner igen boxen" + (CRED ? " (med cookie)" : ""));
           else log("Profil-status " + st + " – leverantören känner inte igen boxen" + (CRED ? " (med cookie)" : "") +
                    (js && js.msg ? " (" + js.msg + ")" : ""));
@@ -267,7 +275,7 @@ var CONFIG = {
     function go() {
       attempt(CRED, function (e, st) {
         if (!e && st === "0") return cb(null);
-        if (CRED) return cb(e || null);
+        if (CRED || CONFIG.proxy) return cb(e || null);
         log("Provar igen och skickar med cookie");
         attempt(true, function (e2, st2) {
           if (!e2) return cb(null);
@@ -550,7 +558,7 @@ var CONFIG = {
   }
   function boot() {
     show("splash"); $("splashBig").innerHTML = "Startar…"; $("splashSmall").innerHTML = "";
-    log("Box: " + MODEL + "  MAC: " + MAC + (IS_STB ? "" : "  (DEMO-läge)"));
+    log("Box: " + MODEL + "  MAC: " + MAC + "  SN: " + (SN ? "ja" : "saknas") + "  ID: " + (DEV1 ? "ja" : "saknas") + (CONFIG.proxy ? "  via mellanserver" : "") + (IS_STB ? "" : "  (DEMO-läge)"));
     var last = parseInt(store("lastChannel"), 10);
     var start = (last >= 0 && last < CH.length) ? last : 0;
     if (!IS_STB) { setTimeout(function () { ready = true; tune(start); }, 1200); return; }
