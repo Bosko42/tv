@@ -14,6 +14,8 @@
 var CONFIG = {
   portal: "https://gmed.me:2053/portal",
   timezone: "Europe/Stockholm",
+  // Lämna tomt. Fylls bara i om en mellanserver (Cloudflare Worker) behövs, t.ex. "https://tv.dittnamn.workers.dev"
+  proxy: "",
   // Kanalerna i den ordning de ska numreras (1, 2, 3 ...).
   // "name" = exakt som i leverantörens lista. "label" = det som visas på skärmen.
   groups: [
@@ -154,7 +156,7 @@ var CONFIG = {
   /* ---------- Box-info ---------- */
   var MAC = "00:1A:79:00:00:00", SN = "", MODEL = "MAG322";
   if (IS_STB) {
-    try { MAC = gSTB.GetDeviceMacAddress() || MAC; } catch (e) {}
+    try { MAC = (gSTB.GetDeviceMacAddress() || MAC).toUpperCase(); } catch (e) {}
     try { SN = gSTB.GetDeviceSerialNumber() || ""; } catch (e) {}
     try { MODEL = gSTB.GetDeviceModelExt() || MODEL; } catch (e) {}
   } else {
@@ -162,7 +164,7 @@ var CONFIG = {
   }
 
   /* ---------- Stalker/Ministra-API ---------- */
-  var API = null, TOKEN = "";
+  var API = null, TOKEN = "", CRED = false;
   function endpoints() {
     var base = CONFIG.portal.replace(/\/+$/, "").replace(/\/c$/, "");
     var origin = base.match(/^https?:\/\/[^\/]+/)[0];
@@ -177,8 +179,10 @@ var CONFIG = {
     for (var k in params) q.push(k + "=" + encodeURIComponent(params[k]));
     q.push("JsHttpRequest=1-xml");
     var full = url + "?" + q.join("&");
+    if (CONFIG.proxy) full = CONFIG.proxy.replace(/\/+$/, "") + "/?m=" + encodeURIComponent(MAC) + "&u=" + encodeURIComponent(full);
     var x = new XMLHttpRequest();
     x.open("GET", full, true);
+    if (CRED) { try { x.withCredentials = true; } catch (e) {} } // skicka med leverantörens cookie (mac=…)
     try { x.setRequestHeader("X-User-Agent", "Model: " + MODEL + "; Link: Ethernet"); } catch (e) {}
     try { x.setRequestHeader("Cookie", "mac=" + MAC + "; stb_lang=en; timezone=" + CONFIG.timezone); } catch (e) {}
     if (TOKEN) { try { x.setRequestHeader("Authorization", "Bearer " + TOKEN); } catch (e) {} }
@@ -203,6 +207,29 @@ var CONFIG = {
       cb(err, js);
     });
   }
+  // Leverantören känner igen boxen på en cookie "mac=…" på sin egen adress.
+  // Vi laddar en osynlig sida från leverantören och sätter cookien där (boxens webbläsare tillåter det).
+  var cookieTried = false;
+  function plantCookie(cb) {
+    if (cookieTried || CONFIG.proxy) return cb();
+    cookieTried = true;
+    var origin = CONFIG.portal.match(/^https?:\/\/[^\/]+/)[0], called = false;
+    var f = document.createElement("iframe");
+    f.style.position = "absolute"; f.style.left = "-2000px"; f.style.width = "10px"; f.style.height = "10px";
+    function done(msg) { if (called) return; called = true; log(msg); setTimeout(function () { try { f.parentNode.removeChild(f); } catch (e) {} }, 100); cb(); }
+    f.onload = function () {
+      try {
+        var d = f.contentWindow.document, exp = "; expires=Fri, 01 Jan 2038 00:00:00 GMT; path=/";
+        d.cookie = "mac=" + encodeURIComponent(MAC) + exp;
+        d.cookie = "stb_lang=en" + exp;
+        d.cookie = "timezone=" + encodeURIComponent(CONFIG.timezone) + exp;
+        done("Cookie hos leverantören: " + (String(d.cookie).indexOf("mac=") >= 0 ? "satt" : "oklart"));
+      } catch (e) { done("Cookie gick inte att sätta: " + e); }
+    };
+    setTimeout(function () { done("Cookie: leverantörens sida laddade inte i tid"); }, 8000);
+    f.src = origin + "/portal.php?type=stb&action=handshake&JsHttpRequest=1-xml";
+    document.body.appendChild(f);
+  }
   function findApi(cb) {
     var list = endpoints(), i = 0;
     (function next() {
@@ -216,22 +243,41 @@ var CONFIG = {
     })();
   }
   function login(cb) {
-    function profile() {
+    function handshake(cb2) {
+      TOKEN = "";
+      req(API, { type: "stb", action: "handshake", token: "", prehash: 0 }, function (err, js) {
+        if (err || !js || !js.token) return cb2("handshake: " + (err || "ingen token"));
+        TOKEN = js.token; cb2(null);
+      });
+    }
+    function profile(cb2) {
       call({ type: "stb", action: "get_profile", hd: 1, ver: "ImageDescription: 0.2.18-r23-322; PORTAL version: 5.6.6",
-             num_banks: 2, sn: SN, stb_type: MODEL, client_type: "STB", image_version: 218, video_out: "hdmi",
+             num_banks: 2, sn: SN, stb_type: "MAG322", client_type: "STB", image_version: 218, video_out: "hdmi",
              auth_second_step: 1, not_valid_token: 0, api_signature: 262, prehash: 0 },
         function (err, js) {
-          if (err) return cb("get_profile: " + err);
-          log("Profil OK" + (js && js.status !== undefined ? " (status " + js.status + ")" : ""));
-          cb(null);
+          if (err) return cb2("get_profile: " + err);
+          var st = js && js.status !== undefined ? String(js.status) : "?";
+          if (st === "0") log("Profil OK – leverantören känner igen boxen" + (CRED ? " (med cookie)" : ""));
+          else log("Profil-status " + st + " – leverantören känner inte igen boxen" + (CRED ? " (med cookie)" : "") +
+                   (js && js.msg ? " (" + js.msg + ")" : ""));
+          cb2(null, st);
         });
     }
-    if (!API) return findApi(function (e) { if (e) return cb(e); profile(); });
-    TOKEN = "";
-    req(API, { type: "stb", action: "handshake", token: "", prehash: 0 }, function (err, js) {
-      if (err || !js || !js.token) return cb("handshake: " + (err || "ingen token"));
-      TOKEN = js.token; profile();
-    });
+    function attempt(cred, cb2) { CRED = cred; handshake(function (e) { if (e) return cb2(e); profile(cb2); }); }
+    function go() {
+      attempt(CRED, function (e, st) {
+        if (!e && st === "0") return cb(null);
+        if (CRED) return cb(e || null);
+        log("Provar igen och skickar med cookie");
+        attempt(true, function (e2, st2) {
+          if (!e2) return cb(null);
+          log("Cookie-läget fungerade inte: " + e2);
+          attempt(false, function (e3) { cb(e3 || null); });
+        });
+      });
+    }
+    if (!API) return plantCookie(function () { findApi(function (e) { if (e) return cb(e); go(); }); });
+    go();
   }
   // "name" kan vara en text eller en lista med alternativ, t.ex. ["RTRS", "RTRS HD", "BA: RTRS"]
   function names(ch) { return (typeof ch.name === "string") ? [ch.name] : ch.name; }
