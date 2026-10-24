@@ -182,12 +182,13 @@ var CONFIG = {
     try { x.setRequestHeader("X-User-Agent", "Model: " + MODEL + "; Link: Ethernet"); } catch (e) {}
     try { x.setRequestHeader("Cookie", "mac=" + MAC + "; stb_lang=en; timezone=" + CONFIG.timezone); } catch (e) {}
     if (TOKEN) { try { x.setRequestHeader("Authorization", "Bearer " + TOKEN); } catch (e) {} }
-    x.timeout = 12000;
+    x.timeout = params.action === "get_all_channels" ? 30000 : 12000;
     x.onreadystatechange = function () {
       if (x.readyState !== 4) return;
       var data = null;
-      try { data = JSON.parse(x.responseText); } catch (e) {}
-      if (x.status !== 200 || !data) { cb("HTTP " + x.status + " " + String(x.responseText || "").substr(0, 120)); return; }
+      var txt = String(x.responseText || "").replace(/^\uFEFF/, "");
+      try { data = JSON.parse(txt); } catch (e) {}
+      if (x.status !== 200 || !data) { cb("HTTP " + x.status + " (" + txt.length + " tecken) " + txt.substr(0, 100)); return; }
       cb(null, data.js !== undefined ? data.js : data);
     };
     x.ontimeout = function () { cb("timeout"); };
@@ -232,48 +233,119 @@ var CONFIG = {
       TOKEN = js.token; profile();
     });
   }
+  // "name" kan vara en text eller en lista med alternativ, t.ex. ["RTRS", "RTRS HD", "BA: RTRS"]
+  function names(ch) { return (typeof ch.name === "string") ? [ch.name] : ch.name; }
+  // tar bort landsprefix (SW:, BA:, RS: …) och kvalitetsord (HD, FHD, SD, 4K) vid jämförelse
+  function core(s) {
+    return norm(String(s || "").replace(/^\s*[A-Z]{2,3}\s*[:|\-]\s*/i, "")
+                               .replace(/\b(FHD|UHD|HD|SD|4K|HEVC|H265)\b/gi, ""));
+  }
+  var TAKEN = {};
+  for (var t0 = 0; t0 < CH.length; t0++) { var nl0 = names(CH[t0]); for (var u0 = 0; u0 < nl0.length; u0++) TAKEN[core(nl0[u0])] = t0; }
+
+  // 3 = exakt, 2 = samma kärnnamn, 1 = innehåller, 0 = ingen träff
+  function score(i, haveName) {
+    var wants = names(CH[i]), hit = 0, ch = core(haveName);
+    for (var w = 0; w < wants.length; w++) {
+      if (norm(haveName) === norm(wants[w])) hit = Math.max(hit, 3);
+      else if (ch === core(wants[w])) hit = Math.max(hit, 2);
+      else if (ch.indexOf(core(wants[w])) >= 0 && !(ch in TAKEN && TAKEN[ch] !== i)) hit = Math.max(hit, 1);
+    }
+    return hit;
+  }
+  function matchAll(all, quiet) {
+    var missing = 0;
+    for (var i = 0; i < CH.length; i++) {
+      var b = [[], [], [], []];
+      for (var j = 0; j < all.length; j++) { var sc = score(i, all[j].name); if (sc) b[sc].push(all[j]); }
+      CH[i].matches = b[3].concat(b[2], b[1]); // fler träffar = reserver om den första inte fungerar
+      CH[i].best = b[3].length ? 3 : b[2].length ? 2 : b[1].length ? 1 : 0;
+      if (!CH[i].matches.length) missing++;
+      if (quiet) continue;
+      if (CH[i].matches.length) {
+        if (CH[i].best < 3) log(CH[i].label + " -> \"" + CH[i].matches[0].name + "\"");
+      } else {
+        var first = core(names(CH[i])[0]).substr(0, 4), sug = [];
+        for (var s2 = 0; s2 < all.length && sug.length < 6; s2++) if (core(all[s2].name).indexOf(first) >= 0) sug.push(all[s2].name);
+        log("HITTADES INTE: " + CH[i].label + (sug.length ? "   liknande: " + sug.join(" | ") : ""));
+      }
+    }
+    return missing;
+  }
+  function allGood() { for (var i = 0; i < CH.length; i++) if (CH[i].best < 2) return false; return true; }
+
+  // Sparar bara det som behövs (namn + cmd) så att nästa start går snabbt
+  function saveCache() {
+    var c = [];
+    for (var i = 0; i < CH.length; i++) {
+      var m = [];
+      for (var j = 0; j < CH[i].matches.length && j < 3; j++) m.push({ name: CH[i].matches[j].name, cmd: CH[i].matches[j].cmd });
+      c.push(m);
+    }
+    store("chCache", JSON.stringify({ t: new Date().getTime(), v: CONFIG.portal + "|" + CH.length, ch: c }));
+  }
+  function loadCache() {
+    try {
+      var c = JSON.parse(store("chCache") || "null");
+      if (!c || c.v !== CONFIG.portal + "|" + CH.length) return false;
+      if (new Date().getTime() - c.t > 7 * 24 * 3600 * 1000) return false; // äldre än en vecka
+      var any = 0;
+      for (var i = 0; i < CH.length; i++) { CH[i].matches = c.ch[i] || []; if (CH[i].matches.length) any++; }
+      // om en kanal saknas i cachen eller namn har ändrats i filen: hämta om
+      for (var k = 0; k < CH.length; k++) {
+        if (!CH[k].matches.length || !score(k, CH[k].matches[0].name)) return false;
+      }
+      log("Kanaler från minnet (" + any + " st)");
+      return true;
+    } catch (e) { return false; }
+  }
+
+  // Metod 1: hela listan på en gång. Metod 2: sida för sida (för portaler där metod 1 inte fungerar).
   function loadChannels(cb) {
     call({ type: "itv", action: "get_all_channels" }, function (err, js) {
-      if (err) return cb("get_all_channels: " + err);
-      var all = (js && js.data) || [];
-      log("Leverantören har " + all.length + " kanaler");
-      // "name" kan vara en text eller en lista med alternativ, t.ex. ["RTRS", "RTRS HD", "BA: RTRS"]
-      function names(ch) { return (typeof ch.name === "string") ? [ch.name] : ch.name; }
-      // tar bort landsprefix (SW:, BA:, RS: …) och kvalitetsord (HD, FHD, SD, 4K) vid jämförelse
-      function core(s) {
-        return norm(String(s || "").replace(/^\s*[A-Z]{2,3}\s*[:|\-]\s*/i, "")
-                                   .replace(/\b(FHD|UHD|HD|SD|4K|HEVC|H265)\b/gi, ""));
+      var all = (!err && js && js.data) || [];
+      if (all.length) {
+        log("Leverantören har " + all.length + " kanaler");
+        matchAll(all); saveCache(); return cb(null);
       }
-      // namn som någon annan av hennes kanaler matchar exakt – får inte "lånas" av en delträff
-      var taken = {};
-      for (var t = 0; t < CH.length; t++) { var nl = names(CH[t]); for (var u = 0; u < nl.length; u++) taken[core(nl[u])] = t; }
-
-      var missing = [];
-      for (var i = 0; i < CH.length; i++) {
-        var wants = names(CH[i]), exact = [], loose = [], partial = [];
-        for (var j = 0; j < all.length; j++) {
-          var have = all[j].name, hit = 0;
-          for (var w = 0; w < wants.length; w++) {
-            if (norm(have) === norm(wants[w])) hit = Math.max(hit, 3);
-            else if (core(have) === core(wants[w])) hit = Math.max(hit, 2);
-            else if (core(have).indexOf(core(wants[w])) >= 0 &&
-                     !(core(have) in taken && taken[core(have)] !== i)) hit = Math.max(hit, 1);
-          }
-          if (hit === 3) exact.push(all[j]); else if (hit === 2) loose.push(all[j]); else if (hit === 1) partial.push(all[j]);
-        }
-        CH[i].matches = exact.concat(loose, partial); // fler träffar = reserver om den första inte fungerar
-        if (CH[i].matches.length) {
-          if (!exact.length) log(CH[i].label + " -> \"" + CH[i].matches[0].name + "\"");
-        } else {
-          missing.push(CH[i].label);
-          // föreslå leverantörens namn som liknar det sökta
-          var first = core(wants[0]).substr(0, 4), sug = [];
-          for (var s = 0; s < all.length && sug.length < 6; s++) if (core(all[s].name).indexOf(first) >= 0) sug.push(all[s].name);
-          log("HITTADES INTE: " + CH[i].label + (sug.length ? "   liknande: " + sug.join(" | ") : ""));
-        }
-      }
-      cb(null);
+      log("get_all_channels gav inget: " + (err || "tom lista") + " – hämtar sida för sida");
+      loadByPages(cb);
     });
+  }
+  function loadByPages(cb) {
+    var got = [], page = 1, pages = null, running = 0, done = false, PAR = 4, fails = 0;
+    function finish(e) {
+      if (done) return; done = true;
+      if (e && !got.length) return cb(e);
+      log("Hämtade " + got.length + " kanaler");
+      matchAll(got); saveCache(); cb(null);
+    }
+    function next() {
+      if (done) return;
+      if (pages !== null && page > pages) { if (!running) finish(); return; }
+      var p = page++; running++;
+      call({ type: "itv", action: "get_ordered_list", genre: "*", force_ch_link_check: "", fav: 0, sortby: "number", hd: 0, p: p },
+        function (err, js) {
+          running--; if (done) return;
+          if (err || !js || !js.data) {
+            fails++; log("sida " + p + ": " + (err || "tom"));
+            if (fails > 5) return finish(err || "get_ordered_list fungerar inte");
+          } else {
+            if (pages === null) {
+              var per = parseInt(js.max_page_items, 10) || js.data.length || 14;
+              pages = Math.ceil((parseInt(js.total_items, 10) || 0) / per) || 1;
+              log("Totalt " + js.total_items + " kanaler, " + pages + " sidor");
+              for (var k = 1; k < PAR; k++) next();
+            }
+            for (var i = 0; i < js.data.length; i++) got.push(js.data[i]);
+            $("splashSmall").innerHTML = "Hämtar kanallistan första gången… " + Math.min(100, Math.round(100 * p / pages)) + "%";
+            matchAll(got, true);
+            if (allGood()) { log("Alla kanaler hittade efter sida " + p); return finish(); }
+          }
+          next();
+        });
+    }
+    next();
   }
   function streamUrl(item, cb) {
     call({ type: "itv", action: "create_link", cmd: item.cmd, series: "", forced_storage: 0, disable_ad: 0, download: 0 },
@@ -325,7 +397,7 @@ var CONFIG = {
   function tryNext() {
     clearTimeout(playTimer);
     if (tryIdx + 1 < CH[current].matches.length) { tryIdx++; log("Provar reservström"); startStream(); }
-    else toast(CH[current].label + " fungerar inte just nu");
+    else { toast(CH[current].label + " fungerar inte just nu"); store("chCache", ""); }
   }
 
   /* ---------- Skärmar ---------- */
@@ -438,7 +510,8 @@ var CONFIG = {
     if (!IS_STB) { setTimeout(function () { ready = true; tune(start); }, 1200); return; }
     login(function (err) {
       if (err) return fail(err);
-      loadChannels(function (err2) {
+      var fromCache = loadCache();
+      (fromCache ? function (f) { f(null); } : loadChannels)(function (err2) {
         if (err2) return fail(err2);
         ready = true; tune(start);
         // håll sessionen vid liv
