@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>TV</title>
+<!--
+  Egen startsida (portal) för MAG322.
+  Skriven i ES5 och utan CSS grid/flex-gap eftersom boxens webbläsare är gammal.
+  Öppnad i en vanlig dator-webbläsare körs den i DEMO-läge med påhittade kanaler.
+
+  ===== ÄNDRA HÄR =====
+-->
+<script>
+var CONFIG = {
+  portal: "https://gmed.me:2053/portal",
+  timezone: "Europe/Stockholm",
+  // Kanalerna i den ordning de ska numreras (1, 2, 3 ...).
+  // "name" = exakt som i leverantörens lista. "label" = det som visas på skärmen.
+  groups: [
+    { title: "BiH / Srbija", color: "#2f6fd1", channels: [
+      { name: "RTRS",            label: "RTRS" },
+      { name: "RTRS PLUS",       label: "RTRS Plus" },
+      { name: "TV 101 PRIJEDOR", label: "TV 101 Prijedor" },
+      { name: "NOVA BH HD",      label: "Nova BH" },
+      { name: "OBN",             label: "OBN" },
+      { name: "BN TV",           label: "BN TV" },
+      { name: "RTS 1 HD",        label: "RTS 1" },
+      { name: "RTS 3 HD",        label: "RTS 3" },
+      { name: "RTS SVET",        label: "RTS Svet" },
+      { name: "NOVA S HD",       label: "Nova S" },
+      { name: "INFORMER TV",     label: "Informer" },
+      { name: "KURIR TV",        label: "Kurir TV" }
+    ]},
+    { title: "Sverige", color: "#d9a400", channels: [
+      { name: "SW: SVT 1",   label: "SVT 1" },
+      { name: "SW: SVT 2",   label: "SVT 2" },
+      { name: "SW: TV3",     label: "TV3" },
+      { name: "SW: TV4",     label: "TV4" },
+      { name: "SW: KANAL 5", label: "Kanal 5" },
+      { name: "SW: TV 6",    label: "TV6" },
+      { name: "SW: TV8",     label: "TV8" },
+      { name: "SW: KANAL 9", label: "Kanal 9" }
+    ]},
+    { title: "Sport", color: "#2e9e57", channels: [
+      { name: "ARENA SPORT 1 PREMIUM", label: "Arena 1" },
+      { name: "ARENA SPORT 2 PREMIUM", label: "Arena 2" },
+      { name: "ARENA SPORT 3 PREMIUM", label: "Arena 3" },
+      { name: "ARENA SPORT 4 PREMIUM", label: "Arena 4" },
+      { name: "ARENA SPORT PREMIUM 5", label: "Arena 5" }
+    ]}
+  ]
+};
+</script>
+<style>
+  html, body { margin:0; padding:0; width:1280px; height:720px; overflow:hidden; }
+  body { background:transparent; color:#fff; font-family: Arial, Helvetica, sans-serif; }
+  body.demo { background:#000; }
+  .scr { position:absolute; left:0; top:0; width:1280px; height:720px; display:none; }
+  .on { display:block; }
+
+  #demoVideo { position:absolute; left:0; top:0; width:1280px; height:720px; display:none; text-align:center;
+               line-height:720px; font-size:40px; color:rgba(255,255,255,.35); }
+  body.demo #demoVideo { display:block; }
+
+  /* Start / meddelanden */
+  #splash { background:#000; text-align:center; }
+  #splash .big { padding-top:300px; font-size:52px; }
+  #splash .small { font-size:26px; color:#aaa; margin-top:20px; }
+
+  /* Kanalskylt */
+  #banner { position:absolute; left:40px; right:40px; bottom:40px; height:130px; background:rgba(0,0,0,.82);
+            border-radius:18px; display:none; }
+  #banner .num { position:absolute; left:36px; top:22px; font-size:84px; font-weight:bold; color:#ffd34d; }
+  #banner .name { position:absolute; left:190px; top:36px; font-size:58px; font-weight:bold; }
+  #banner .hint { position:absolute; right:36px; top:36px; font-size:26px; color:#ccc; text-align:right; }
+
+  /* Sifferinmatning */
+  #digits { position:absolute; right:50px; top:40px; background:rgba(0,0,0,.85); border-radius:16px;
+            padding:10px 34px; font-size:90px; font-weight:bold; color:#ffd34d; display:none; }
+
+  /* Felruta */
+  #toast { position:absolute; left:240px; right:240px; top:280px; background:rgba(150,20,20,.92); border-radius:16px;
+           padding:30px; font-size:36px; text-align:center; display:none; }
+
+  /* Kanalmeny */
+  #menu { background:#111318; }
+  #menu .head { position:absolute; left:50px; right:50px; top:26px; height:60px; }
+  #menu .title { position:absolute; left:0; top:0; font-size:44px; font-weight:bold; }
+  #menu .clock { position:absolute; right:0; top:0; font-size:44px; color:#aaa; }
+  #grid { position:absolute; left:50px; top:100px; width:1190px; }
+  .tile { float:left; width:222px; height:100px; margin:0 12px 10px 0; background:#2a2e38; border-radius:12px;
+          position:relative; border:4px solid transparent; box-sizing:border-box; overflow:hidden; }
+  .tile .bar { position:absolute; left:0; top:0; bottom:0; width:10px; }
+  .tile .n { position:absolute; left:24px; top:10px; font-size:40px; font-weight:bold; color:#ffd34d; }
+  .tile .c { position:absolute; left:24px; top:56px; right:8px; font-size:28px; font-weight:bold; white-space:nowrap;
+             overflow:hidden; text-overflow:ellipsis; }
+  .tile.sel { background:#ffd34d; border-color:#fff; }
+  .tile.sel .n, .tile.sel .c { color:#111; }
+  .tile.missing { opacity:.35; }
+  #menu .foot { position:absolute; left:50px; right:50px; bottom:14px; font-size:24px; color:#999; text-align:center; }
+
+  /* Felsökning */
+  #debug { background:#000; font-family: monospace; font-size:17px; color:#9f9; padding:20px 30px; box-sizing:border-box; }
+  #debug .h { color:#fff; font-size:22px; margin-bottom:10px; }
+  #log { white-space:pre-wrap; height:640px; overflow:hidden; }
+</style>
+</head>
+<body>
+  <div id="demoVideo"></div>
+
+  <div id="splash" class="scr on"><div class="big" id="splashBig">Startar…</div><div class="small" id="splashSmall"></div></div>
+
+  <div id="play" class="scr">
+    <div id="banner"><div class="num" id="bNum"></div><div class="name" id="bName"></div>
+      <div class="hint">OK = alla kanaler</div></div>
+  </div>
+
+  <div id="menu" class="scr">
+    <div class="head"><div class="title">Välj kanal</div><div class="clock" id="clock"></div></div>
+    <div id="grid"></div>
+    <div class="foot">Tryck kanalens nummer &nbsp;·&nbsp; eller pilar + OK &nbsp;·&nbsp; Tillbaka = stäng</div>
+  </div>
+
+  <div id="debug" class="scr"><div class="h">Felsökning – tryck Tillbaka för att stänga</div><div id="log"></div></div>
+
+  <div id="digits"></div>
+  <div id="toast"></div>
+
+<script>
+(function () {
+  var IS_STB = typeof window.gSTB !== "undefined";
+  var LOG = [];
+  function log(s) {
+    var t = new Date(); LOG.push(pad(t.getHours()) + ":" + pad(t.getMinutes()) + ":" + pad(t.getSeconds()) + "  " + s);
+    if (LOG.length > 40) LOG.shift();
+    var el = $("log"); if (el) el.innerHTML = esc(LOG.join("\n"));
+  }
+  function $(id) { return document.getElementById(id); }
+  function pad(n) { return n < 10 ? "0" + n : "" + n; }
+  function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+  function norm(s) { return String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, ""); }
+  function store(k, v) { try { if (v === undefined) return window.localStorage.getItem(k); window.localStorage.setItem(k, v); } catch (e) { return null; } }
+
+  /* ---------- Kanallista från config ---------- */
+  var CH = [];
+  for (var g = 0; g < CONFIG.groups.length; g++) {
+    var grp = CONFIG.groups[g];
+    for (var c = 0; c < grp.channels.length; c++) {
+      CH.push({ num: CH.length + 1, name: grp.channels[c].name, label: grp.channels[c].label,
+                color: grp.color, matches: [] });
+    }
+  }
+
+  /* ---------- Box-info ---------- */
+  var MAC = "00:1A:79:00:00:00", SN = "", MODEL = "MAG322";
+  if (IS_STB) {
+    try { MAC = gSTB.GetDeviceMacAddress() || MAC; } catch (e) {}
+    try { SN = gSTB.GetDeviceSerialNumber() || ""; } catch (e) {}
+    try { MODEL = gSTB.GetDeviceModelExt() || MODEL; } catch (e) {}
+  } else {
+    document.body.className = "demo";
+  }
+
+  /* ---------- Stalker/Ministra-API ---------- */
+  var API = null, TOKEN = "";
+  function endpoints() {
+    var base = CONFIG.portal.replace(/\/+$/, "").replace(/\/c$/, "");
+    var origin = base.match(/^https?:\/\/[^\/]+/)[0];
+    var list = [base + ".php", origin + "/portal.php", origin + "/stalker_portal/server/load.php",
+                base + "/server/load.php", origin + "/server/load.php"];
+    var out = [];
+    for (var i = 0; i < list.length; i++) if (out.indexOf(list[i]) < 0) out.push(list[i]);
+    return out;
+  }
+  function req(url, params, cb) {
+    var q = [];
+    for (var k in params) q.push(k + "=" + encodeURIComponent(params[k]));
+    q.push("JsHttpRequest=1-xml");
+    var full = url + "?" + q.join("&");
+    var x = new XMLHttpRequest();
+    x.open("GET", full, true);
+    try { x.setRequestHeader("X-User-Agent", "Model: " + MODEL + "; Link: Ethernet"); } catch (e) {}
+    try { x.setRequestHeader("Cookie", "mac=" + MAC + "; stb_lang=en; timezone=" + CONFIG.timezone); } catch (e) {}
+    if (TOKEN) { try { x.setRequestHeader("Authorization", "Bearer " + TOKEN); } catch (e) {} }
+    x.timeout = 12000;
+    x.onreadystatechange = function () {
+      if (x.readyState !== 4) return;
+      var data = null;
+      try { data = JSON.parse(x.responseText); } catch (e) {}
+      if (x.status !== 200 || !data) { cb("HTTP " + x.status + " " + String(x.responseText || "").substr(0, 120)); return; }
+      cb(null, data.js !== undefined ? data.js : data);
+    };
+    x.ontimeout = function () { cb("timeout"); };
+    x.send(null);
+  }
+  function call(params, cb) {
+    params.mac = MAC; // en del portaler läser även mac från URL:en
+    req(API, params, function (err, js) {
+      if (err && /HTTP 401|HTTP 403/.test(err)) { // token har gått ut – logga in igen
+        log("Token ogiltig, loggar in igen"); return login(function (e2) { if (e2) return cb(e2); req(API, params, cb); });
+      }
+      cb(err, js);
+    });
+  }
+  function findApi(cb) {
+    var list = endpoints(), i = 0;
+    (function next() {
+      if (i >= list.length) return cb("Hittar ingen fungerande portal-adress");
+      var url = list[i++]; log("Testar " + url);
+      TOKEN = "";
+      req(url, { type: "stb", action: "handshake", token: "", prehash: 0 }, function (err, js) {
+        if (!err && js && js.token) { API = url; TOKEN = js.token; log("OK: " + url); return cb(null); }
+        log("  nej: " + (err || JSON.stringify(js).substr(0, 100))); next();
+      });
+    })();
+  }
+  function login(cb) {
+    function profile() {
+      call({ type: "stb", action: "get_profile", hd: 1, ver: "ImageDescription: 0.2.18-r23-322; PORTAL version: 5.6.6",
+             num_banks: 2, sn: SN, stb_type: MODEL, client_type: "STB", image_version: 218, video_out: "hdmi",
+             auth_second_step: 1, not_valid_token: 0, api_signature: 262, prehash: 0 },
+        function (err, js) {
+          if (err) return cb("get_profile: " + err);
+          log("Profil OK" + (js && js.status !== undefined ? " (status " + js.status + ")" : ""));
+          cb(null);
+        });
+    }
+    if (!API) return findApi(function (e) { if (e) return cb(e); profile(); });
+    TOKEN = "";
+    req(API, { type: "stb", action: "handshake", token: "", prehash: 0 }, function (err, js) {
+      if (err || !js || !js.token) return cb("handshake: " + (err || "ingen token"));
+      TOKEN = js.token; profile();
+    });
+  }
+  function loadChannels(cb) {
+    call({ type: "itv", action: "get_all_channels" }, function (err, js) {
+      if (err) return cb("get_all_channels: " + err);
+      var all = (js && js.data) || [];
+      log("Leverantören har " + all.length + " kanaler");
+      // "name" kan vara en text eller en lista med alternativ, t.ex. ["RTRS", "RTRS HD", "BA: RTRS"]
+      function names(ch) { return (typeof ch.name === "string") ? [ch.name] : ch.name; }
+      // tar bort landsprefix (SW:, BA:, RS: …) och kvalitetsord (HD, FHD, SD, 4K) vid jämförelse
+      function core(s) {
+        return norm(String(s || "").replace(/^\s*[A-Z]{2,3}\s*[:|\-]\s*/i, "")
+                                   .replace(/\b(FHD|UHD|HD|SD|4K|HEVC|H265)\b/gi, ""));
+      }
+      // namn som någon annan av hennes kanaler matchar exakt – får inte "lånas" av en delträff
+      var taken = {};
+      for (var t = 0; t < CH.length; t++) { var nl = names(CH[t]); for (var u = 0; u < nl.length; u++) taken[core(nl[u])] = t; }
+
+      var missing = [];
+      for (var i = 0; i < CH.length; i++) {
+        var wants = names(CH[i]), exact = [], loose = [], partial = [];
+        for (var j = 0; j < all.length; j++) {
+          var have = all[j].name, hit = 0;
+          for (var w = 0; w < wants.length; w++) {
+            if (norm(have) === norm(wants[w])) hit = Math.max(hit, 3);
+            else if (core(have) === core(wants[w])) hit = Math.max(hit, 2);
+            else if (core(have).indexOf(core(wants[w])) >= 0 &&
+                     !(core(have) in taken && taken[core(have)] !== i)) hit = Math.max(hit, 1);
+          }
+          if (hit === 3) exact.push(all[j]); else if (hit === 2) loose.push(all[j]); else if (hit === 1) partial.push(all[j]);
+        }
+        CH[i].matches = exact.concat(loose, partial); // fler träffar = reserver om den första inte fungerar
+        if (CH[i].matches.length) {
+          if (!exact.length) log(CH[i].label + " -> \"" + CH[i].matches[0].name + "\"");
+        } else {
+          missing.push(CH[i].label);
+          // föreslå leverantörens namn som liknar det sökta
+          var first = core(wants[0]).substr(0, 4), sug = [];
+          for (var s = 0; s < all.length && sug.length < 6; s++) if (core(all[s].name).indexOf(first) >= 0) sug.push(all[s].name);
+          log("HITTADES INTE: " + CH[i].label + (sug.length ? "   liknande: " + sug.join(" | ") : ""));
+        }
+      }
+      cb(null);
+    });
+  }
+  function streamUrl(item, cb) {
+    call({ type: "itv", action: "create_link", cmd: item.cmd, series: "", forced_storage: 0, disable_ad: 0, download: 0 },
+      function (err, js) {
+        var cmd = (!err && js && js.cmd) ? js.cmd : item.cmd;
+        if (err) log("create_link: " + err + " – provar kanalens egen adress");
+        if (!/^\S+\s+\S+/.test(cmd)) cmd = "auto " + cmd;
+        cb(cmd);
+      });
+  }
+
+  /* ---------- Spelare ---------- */
+  var current = 0, tryIdx = 0, playTimer = null;
+  if (IS_STB) {
+    try { gSTB.InitPlayer(); } catch (e) {}
+    try { gSTB.SetTopWin(0); } catch (e) {}
+    try { gSTB.SetPIG(1, -1, -1, -1); } catch (e) {}
+    try { gSTB.EnableServiceButton(true); } catch (e) {}
+    window.stbEvent = { onEvent: function (ev) {
+      ev = String(ev);
+      if (ev === "4") { clearTimeout(playTimer); log("Spelar " + CH[current].label); }
+      if (ev === "5" || ev === "1") { log("Strömmen bröts (event " + ev + ")"); tryNext(); }
+    }};
+  }
+  function tune(i) {
+    current = i; tryIdx = 0;
+    store("lastChannel", String(i));
+    showBanner();
+    startStream();
+  }
+  function startStream() {
+    var ch = CH[current];
+    if (!IS_STB) {
+      $("demoVideo").style.background = "radial-gradient(circle at 30% 30%, " + ch.color + ", #000 80%)";
+      $("demoVideo").innerHTML = esc(ch.label) + " – TV-bild (demo)";
+      return;
+    }
+    var item = ch.matches[tryIdx];
+    if (!item) { toast(ch.label + " fungerar inte just nu"); return; }
+    try { gSTB.Stop(); } catch (e) {}
+    streamUrl(item, function (cmd) {
+      if (current !== CH.indexOf(ch)) return; // hon har bytt kanal under tiden
+      log("Startar: " + cmd.substr(0, 90));
+      try { gSTB.Play(cmd); } catch (e) { log("Play-fel: " + e); }
+      clearTimeout(playTimer);
+      playTimer = setTimeout(function () { log("Ingen bild efter 15 s"); tryNext(); }, 15000);
+    });
+  }
+  function tryNext() {
+    clearTimeout(playTimer);
+    if (tryIdx + 1 < CH[current].matches.length) { tryIdx++; log("Provar reservström"); startStream(); }
+    else toast(CH[current].label + " fungerar inte just nu");
+  }
+
+  /* ---------- Skärmar ---------- */
+  var ready = false, mode = "splash", sel = 0, bannerTimer = null, toastTimer = null;
+  function show(id) {
+    var ids = ["splash", "play", "menu", "debug"];
+    for (var i = 0; i < ids.length; i++) $(ids[i]).className = "scr" + (ids[i] === id ? " on" : "");
+    mode = id;
+  }
+  function showBanner() {
+    show("play");
+    $("bNum").innerHTML = CH[current].num; $("bName").innerHTML = esc(CH[current].label);
+    $("banner").style.display = "block";
+    clearTimeout(bannerTimer);
+    bannerTimer = setTimeout(function () { $("banner").style.display = "none"; }, 4000);
+  }
+  function toast(msg) {
+    $("toast").innerHTML = esc(msg); $("toast").style.display = "block";
+    clearTimeout(toastTimer); toastTimer = setTimeout(function () { $("toast").style.display = "none"; }, 4000);
+  }
+  function renderGrid() {
+    var h = "";
+    for (var i = 0; i < CH.length; i++) {
+      var cls = "tile" + (i === sel ? " sel" : "") + (IS_STB && API && !CH[i].matches.length ? " missing" : "");
+      h += '<div class="' + cls + '"><div class="bar" style="background:' + CH[i].color + '"></div>' +
+           '<div class="n">' + CH[i].num + '</div><div class="c">' + esc(CH[i].label) + "</div></div>";
+    }
+    $("grid").innerHTML = h;
+  }
+  function openMenu() { sel = current; renderGrid(); show("menu"); }
+  function tick() { var d = new Date(); $("clock").innerHTML = pad(d.getHours()) + ":" + pad(d.getMinutes()); }
+  setInterval(tick, 10000); tick();
+
+  /* ---------- Sifferinmatning (1–2 siffror) ---------- */
+  var typed = "", typedTimer = null;
+  function digit(d) {
+    typed += d; $("digits").innerHTML = typed; $("digits").style.display = "block";
+    clearTimeout(typedTimer);
+    var n = parseInt(typed, 10);
+    var canGrow = n * 10 <= CH.length && typed.length < 2;
+    if (canGrow) typedTimer = setTimeout(commitDigits, 1600);
+    else commitDigits();
+  }
+  function commitDigits() {
+    clearTimeout(typedTimer);
+    var n = parseInt(typed, 10); typed = ""; $("digits").style.display = "none";
+    if (n >= 1 && n <= CH.length) tune(n - 1);
+    else toast("Kanal " + n + " finns inte");
+  }
+
+  /* ---------- Fjärrkontroll ---------- */
+  var COLS = 5;
+  document.onkeydown = function (e) {
+    e = e || window.event;
+    var k = e.keyCode, alt = e.altKey, shift = e.shiftKey;
+    if (mode === "splash") return;
+
+    // Volym (MAG skickar dessa till sidan)
+    if (IS_STB && (k === 107 || k === 109)) {
+      try { var v = gSTB.GetVolume() + (k === 107 ? 5 : -5); gSTB.SetVolume(Math.max(0, Math.min(100, v))); gSTB.SetMute(0); } catch (x) {}
+      return stop(e);
+    }
+    if (IS_STB && k === 192 && alt) { try { gSTB.SetMute(gSTB.GetMute() ? 0 : 1); } catch (x) {} return stop(e); }
+
+    if (k >= 48 && k <= 57 && !alt) {                       // siffror
+      if (k === 48 && typed === "") { if (mode === "debug") show("play"); else show("debug"); return stop(e); }
+      digit(String(k - 48)); return stop(e);
+    }
+    var up = k === 38, down = k === 40, left = k === 37, right = k === 39, ok = k === 13;
+    var back = k === 8 || k === 27, menuKey = k === 122 || (k === 77 && !IS_STB);
+    var chUp = (k === 9 && !shift) || k === 33, chDown = (k === 9 && shift) || k === 34;
+    var info = k === 89 && alt;
+
+    if (mode === "debug") { if (back || ok) { if (ready) showBanner(); else { show("splash"); mode = "error"; } } return stop(e); }
+
+    if (mode === "play") {
+      if (ok || menuKey) openMenu();
+      else if (up || chUp) tune((current + 1) % CH.length);
+      else if (down || chDown) tune((current - 1 + CH.length) % CH.length);
+      else if (info || back) showBanner();
+      else return;
+      return stop(e);
+    }
+    if (mode === "menu") {
+      if (left) sel = Math.max(0, sel - 1);
+      else if (right) sel = Math.min(CH.length - 1, sel + 1);
+      else if (up) sel = Math.max(0, sel - COLS);
+      else if (down) sel = Math.min(CH.length - 1, sel + COLS);
+      else if (ok) { tune(sel); return stop(e); }
+      else if (back || menuKey) { showBanner(); return stop(e); }
+      else return;
+      renderGrid(); return stop(e);
+    }
+  };
+  function stop(e) { if (e.preventDefault) e.preventDefault(); return false; }
+
+  /* ---------- Start ---------- */
+  function fail(msg) {
+    log("FEL: " + msg);
+    $("splashBig").innerHTML = "Kunde inte starta";
+    $("splashSmall").innerHTML = "Försöker igen om 30 sekunder…<br>(tryck 0 för felsökning)";
+    mode = "error";
+    setTimeout(boot, 30000);
+  }
+  function boot() {
+    show("splash"); $("splashBig").innerHTML = "Startar…"; $("splashSmall").innerHTML = "";
+    log("Box: " + MODEL + "  MAC: " + MAC + (IS_STB ? "" : "  (DEMO-läge)"));
+    var last = parseInt(store("lastChannel"), 10);
+    var start = (last >= 0 && last < CH.length) ? last : 0;
+    if (!IS_STB) { setTimeout(function () { ready = true; tune(start); }, 1200); return; }
+    login(function (err) {
+      if (err) return fail(err);
+      loadChannels(function (err2) {
+        if (err2) return fail(err2);
+        ready = true; tune(start);
+        // håll sessionen vid liv
+        setInterval(function () { call({ type: "watchdog", action: "get_events", cur_play_type: 1, event_active_id: 0, init: 0 },
+          function (e3) { if (e3) log("watchdog: " + e3); }); }, 120000);
+      });
+    });
+  }
+  // tillåt 0 = felsökning även på felskärmen
+  var origKey = document.onkeydown;
+  document.onkeydown = function (e) {
+    e = e || window.event;
+    if (mode === "error" && e.keyCode === 48) { show("debug"); return false; }
+    if (mode === "error") return;
+    return origKey(e);
+  };
+  boot();
+})();
+</script>
+</body>
+</html>
