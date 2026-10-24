@@ -168,7 +168,7 @@ var CONFIG = {
   }
 
   /* ---------- Stalker/Ministra-API ---------- */
-  var API = null, TOKEN = "", CRED = false;
+  var API = null, TOKEN = "", CRED = false, SENDMAC = MAC;
   function endpoints() {
     var base = CONFIG.portal.replace(/\/+$/, "").replace(/\/c$/, "");
     var origin = base.match(/^https?:\/\/[^\/]+/)[0];
@@ -183,7 +183,7 @@ var CONFIG = {
     for (var k in params) q.push(k + "=" + encodeURIComponent(params[k]));
     q.push("JsHttpRequest=1-xml");
     var full = url + "?" + q.join("&");
-    if (CONFIG.proxy) full = CONFIG.proxy.replace(/\/+$/, "") + "/?m=" + encodeURIComponent(MAC) + "&u=" + encodeURIComponent(full);
+    if (CONFIG.proxy) full = CONFIG.proxy.replace(/\/+$/, "") + "/?m=" + encodeURIComponent(SENDMAC) + "&u=" + encodeURIComponent(full);
     var x = new XMLHttpRequest();
     x.open("GET", full, true);
     if (CRED) { try { x.withCredentials = true; } catch (e) {} } // skicka med leverantörens cookie (mac=…)
@@ -203,7 +203,7 @@ var CONFIG = {
     x.send(null);
   }
   function call(params, cb) {
-    params.mac = MAC; // en del portaler läser även mac från URL:en
+    params.mac = SENDMAC; // en del portaler läser även mac från URL:en
     req(API, params, function (err, js) {
       if (err && /HTTP 401|HTTP 403/.test(err)) { // token har gått ut – logga in igen
         log("Token ogiltig, loggar in igen"); return login(function (e2) { if (e2) return cb(e2); req(API, params, cb); });
@@ -275,7 +275,16 @@ var CONFIG = {
     function go() {
       attempt(CRED, function (e, st) {
         if (!e && st === "0") return cb(null);
-        if (CRED || CONFIG.proxy) return cb(e || null);
+        if (CONFIG.proxy) {
+          if (e || SENDMAC !== MAC) return cb(e || null);
+          log("Provar med MAC i små bokstäver");
+          SENDMAC = MAC.toLowerCase();
+          return attempt(false, function (e2, st2) {
+            if (!e2 && st2 === "0") return cb(null);
+            SENDMAC = MAC; cb(e2 || null);
+          });
+        }
+        if (CRED) return cb(e || null);
         log("Provar igen och skickar med cookie");
         attempt(true, function (e2, st2) {
           if (!e2) return cb(null);
